@@ -2,6 +2,7 @@
 
 // Initialize the allocator by setting up the memory pool.
 uint8_t *initialize_allocator(size_t pool_size) {
+    pool_size = MAX(MIN_BLOCK_SIZE, pool_size);
     memory_pool = malloc(pool_size);
     printf("Mem pool %p:\n", memory_pool);
     if (!memory_pool) {
@@ -12,6 +13,7 @@ uint8_t *initialize_allocator(size_t pool_size) {
     // Entire pool is initially one free block.
     free_list = (FreeBlock *) memory_pool;
     free_list->header.metadata = SET_METADATA(pool_size, 1);
+
     free_list->next = NULL;
     free_list->prev = NULL;
     highest_addr = memory_pool;
@@ -35,10 +37,11 @@ void *new_malloc(size_t size) {
 
     while (current) {
         size_t current_size = GET_BLOCK_SIZE(current->header.metadata);
-
+        printf("========== %zu total: %zu\n", current_size, current->header.metadata);
         if (current_size >= total_size) {
-            split_block(current, total_size); // Split the block if necessary.
-            return (void *) ((uint8_t *) current + sizeof(HeaderFooter)); // Return the user space, not the header
+            uint8_t *result = split_block(current, total_size); // Split the block if necessary.
+
+            return result; // Return the user space, not the header
         }
 
         current = current->next; // Move to the next free block
@@ -78,9 +81,7 @@ void coalesce(FreeBlock *block) {
 
             // Remove the next block from the free list.
             FreeBlock *next = (FreeBlock *) next_header;
-            if (next->next) next->next->prev = next->prev;
-            if (next->prev) next->prev->next = next->next;
-            if (free_list == next) free_list = next->next;
+            remove_from_free_list(next);
         }
     }
 
@@ -96,9 +97,7 @@ void coalesce(FreeBlock *block) {
             footer->metadata = SET_METADATA(block_size, 1);
 
             // Remove the current block from the free list.
-            if (block->next) block->next->prev = block->prev;
-            if (block->prev) block->prev->next = block->next;
-            if (free_list == block) free_list = block->next;
+            remove_from_free_list(block);
 
             block = prev; // Update block to point to the merged block.
         }
@@ -112,9 +111,20 @@ void coalesce(FreeBlock *block) {
 
 
 // Split a free block into two if it is large enough.
-void split_block(FreeBlock *block, size_t total_size) {
+uint8_t *split_block(FreeBlock *block, size_t total_size) {
     size_t block_size = GET_BLOCK_SIZE(block->header.metadata);
     size_t remaining_free_size = block_size - total_size;
+    uint8_t *result = NULL;
+
+    if (remaining_free_size == 0) {
+        block->header.metadata = SET_METADATA(total_size, 0);
+        HeaderFooter *block_footer = (HeaderFooter *) ((uint8_t *) block + total_size - sizeof(HeaderFooter));
+        block_footer->metadata = SET_METADATA(total_size, 0);
+        result = (uint8_t *) block + sizeof(HeaderFooter);
+
+        remove_from_free_list(block);
+
+    }
 
     // check if the remaining free block too small to store the free list
     if (remaining_free_size >= MIN_BLOCK_SIZE) {
@@ -127,6 +137,8 @@ void split_block(FreeBlock *block, size_t total_size) {
         block->header.metadata = SET_METADATA(total_size, 0);
         HeaderFooter *block_footer = (HeaderFooter *) ((uint8_t *) block + total_size - sizeof(HeaderFooter));
         block_footer->metadata = SET_METADATA(total_size, 0);
+        remove_from_free_list(block);
+        result = (uint8_t *) block + sizeof(HeaderFooter);
 
         // Update the high watermark if this allocation extends it.
         highest_addr = MAX(highest_addr, (uint8_t *) block + total_size);
@@ -136,8 +148,18 @@ void split_block(FreeBlock *block, size_t total_size) {
         if (free_list) free_list->prev = free_block;
         free_list = free_block;
     }
+
+    return result;
 }
 
 void free_allocator(uint8_t *mem_pool) {
     free(mem_pool);
 }
+
+void remove_from_free_list(FreeBlock *free_block) {
+    if (free_block->next) free_block->next->prev = free_block->prev;
+    if (free_block->prev) free_block->prev->next = free_block->next;
+    if (free_list == free_block) free_list = free_block->next;
+}
+
+
