@@ -5,7 +5,6 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#include <pthread.h>
 
 // Align the size to the nearest multiple of the machine word size (typically 8 bytes on 64-bit machines).
 #define ALIGN(size) (((size) + sizeof(size_t) - 1) & ~(sizeof(size_t) - 1))
@@ -34,18 +33,16 @@ typedef struct FreeBlock {
 // Function prototypes.
 void* new_malloc(size_t size);
 void new_free(void *ptr);
-void coalesce(FreeBlock *block);
+FreeBlock* coalesce(FreeBlock *block);
 uint8_t* split_block(FreeBlock *block, size_t total_size);
 uint8_t* initialize_allocator(size_t size);
 void free_allocator(uint8_t *mem_pool);
 void remove_from_free_list(FreeBlock *free_block);
-
+void add_to_free_list(FreeBlock *free_block);
 // The start of the free list.
 static FreeBlock* free_list = NULL;
 // Track the highest initialized address in the pool.
 static uint8_t* highest_addr = 0;
 // Memory pool (example size: 5 MB).
 uint8_t *memory_pool;
-static pthread_mutex_t allocator_lock = PTHREAD_MUTEX_INITIALIZER;
-
 #endif

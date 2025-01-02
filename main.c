@@ -4,7 +4,6 @@
 uint8_t *initialize_allocator(size_t pool_size) {
     pool_size = MAX(MIN_BLOCK_SIZE, pool_size);
     memory_pool = malloc(pool_size);
-    printf("Mem pool %p:\n", memory_pool);
     if (!memory_pool) {
         fprintf(stderr, "Failed to allocate memory pool.\n");
         exit(EXIT_FAILURE);
@@ -21,7 +20,6 @@ uint8_t *initialize_allocator(size_t pool_size) {
     // Set the footer to match the header for easy coalescing.
     HeaderFooter *footer = (HeaderFooter *) ((uint8_t *) free_list + pool_size - sizeof(HeaderFooter));
     footer->metadata = SET_METADATA(pool_size, 1);
-    printf("the end of pool %p:\n", footer);
     return memory_pool;
 }
 
@@ -37,41 +35,41 @@ void *new_malloc(size_t size) {
 
     while (current) {
         size_t current_size = GET_BLOCK_SIZE(current->header.metadata);
-        printf("========== %zu total: %zu\n", current_size, current->header.metadata);
         if (current_size >= total_size) {
             uint8_t *result = split_block(current, total_size); // Split the block if necessary.
-
             return result; // Return the user space, not the header
         }
-
         current = current->next; // Move to the next free block
     }
 
     return NULL; // No suitable block found.
 }
 
-// Free the memory block pointed to by `ptr`.
 void new_free(void *ptr) {
     if (!ptr) return;
-
     // get the header
     FreeBlock *block = (FreeBlock *) ((uint8_t *) ptr - sizeof(HeaderFooter));
-    block->header.metadata = SET_FREE(block->header.metadata); // Mark as free.
+    block->header.metadata = SET_FREE(block->header.metadata);
 
     HeaderFooter *footer = (HeaderFooter *) ((uint8_t *) block + GET_BLOCK_SIZE(block->header.metadata) -
                                              sizeof(HeaderFooter));
-    footer->metadata = block->header.metadata; // Update the footer.
+    footer->metadata = block->header.metadata;
 
-    coalesce(block); // Attempt to merge with adjacent free blocks.
+    // Attempt to merge with adjacent free blocks.
+    FreeBlock *coalesced_block = coalesce(block);
+    add_to_free_list(coalesced_block);
+
 }
 
 // Coalesce adjacent free blocks to avoid fragmentation.
-void coalesce(FreeBlock *block) {
+FreeBlock *coalesce(FreeBlock *block) {
+    FreeBlock *result = block;
     size_t block_size = GET_BLOCK_SIZE(block->header.metadata);
 
     // Try to coalesce with the next block.
     HeaderFooter *next_header = (HeaderFooter *) ((uint8_t *) block + block_size);
-    if ((uint8_t *) next_header < highest_addr) {
+    if ((uint8_t *) next_header <= highest_addr) {
+
         size_t next_size = GET_BLOCK_SIZE(next_header->metadata);
         if (next_header->metadata & 1) { // Check if the next block is free.
             block_size += next_size;
@@ -83,6 +81,7 @@ void coalesce(FreeBlock *block) {
             FreeBlock *next = (FreeBlock *) next_header;
             remove_from_free_list(next);
         }
+        result = block;
     }
 
     // Try to coalesce with the previous block.
@@ -90,23 +89,19 @@ void coalesce(FreeBlock *block) {
     if ((uint8_t *) prev_footer >= memory_pool) {
         size_t prev_size = GET_BLOCK_SIZE(prev_footer->metadata);
         if (prev_footer->metadata & 1) { // Check if the previous block is free.
+
             FreeBlock *prev = (FreeBlock *) ((uint8_t *) block - prev_size);
             block_size += prev_size;
             prev->header.metadata = SET_METADATA(block_size, 1);
             HeaderFooter *footer = (HeaderFooter *) ((uint8_t *) prev + block_size - sizeof(HeaderFooter));
             footer->metadata = SET_METADATA(block_size, 1);
 
-            // Remove the current block from the free list.
-            remove_from_free_list(block);
-
-            block = prev; // Update block to point to the merged block.
+            remove_from_free_list(prev);
+            result = prev;
         }
     }
 
-    // Add the coalesced block back to the free list.
-    block->next = free_list;
-    if (free_list) free_list->prev = block;
-    free_list = block;
+    return result;
 }
 
 
@@ -114,17 +109,8 @@ void coalesce(FreeBlock *block) {
 uint8_t *split_block(FreeBlock *block, size_t total_size) {
     size_t block_size = GET_BLOCK_SIZE(block->header.metadata);
     size_t remaining_free_size = block_size - total_size;
-    uint8_t *result = NULL;
 
-    if (remaining_free_size == 0) {
-        block->header.metadata = SET_METADATA(total_size, 0);
-        HeaderFooter *block_footer = (HeaderFooter *) ((uint8_t *) block + total_size - sizeof(HeaderFooter));
-        block_footer->metadata = SET_METADATA(total_size, 0);
-        result = (uint8_t *) block + sizeof(HeaderFooter);
-
-        remove_from_free_list(block);
-
-    }
+    remove_from_free_list(block);
 
     // check if the remaining free block too small to store the free list
     if (remaining_free_size >= MIN_BLOCK_SIZE) {
@@ -133,33 +119,59 @@ uint8_t *split_block(FreeBlock *block, size_t total_size) {
         HeaderFooter *footer = (HeaderFooter *) ((uint8_t *) free_block + remaining_free_size - sizeof(HeaderFooter));
         footer->metadata = SET_METADATA(remaining_free_size, 1);
 
+        // join and add free block to free list
+        FreeBlock *coalesced_free_block = coalesce(free_block);
+        add_to_free_list(coalesced_free_block);
+
         // return this block for user
         block->header.metadata = SET_METADATA(total_size, 0);
         HeaderFooter *block_footer = (HeaderFooter *) ((uint8_t *) block + total_size - sizeof(HeaderFooter));
         block_footer->metadata = SET_METADATA(total_size, 0);
-        remove_from_free_list(block);
-        result = (uint8_t *) block + sizeof(HeaderFooter);
 
         // Update the high watermark if this allocation extends it.
         highest_addr = MAX(highest_addr, (uint8_t *) block + total_size);
 
-        // Add the new free block to the free list.
-        free_block->next = free_list;
-        if (free_list) free_list->prev = free_block;
-        free_list = free_block;
+        return (uint8_t *) block + sizeof(HeaderFooter);
     }
 
-    return result;
+    // consume the whole free chunk
+    block->header.metadata = SET_METADATA(total_size, 0);
+    HeaderFooter *block_footer = (HeaderFooter *) ((uint8_t *) block + total_size - sizeof(HeaderFooter));
+    block_footer->metadata = SET_METADATA(total_size, 0);
+
+    highest_addr = MAX(highest_addr, (uint8_t *) block + total_size);
+
+
+    return (uint8_t *) block + sizeof(HeaderFooter);
 }
 
 void free_allocator(uint8_t *mem_pool) {
     free(mem_pool);
 }
 
-void remove_from_free_list(FreeBlock *free_block) {
-    if (free_block->next) free_block->next->prev = free_block->prev;
-    if (free_block->prev) free_block->prev->next = free_block->next;
-    if (free_list == free_block) free_list = free_block->next;
+void add_to_free_list(FreeBlock *free_block) {
+    free_block->next = free_list;
+    if (free_list) {
+        free_list->prev = free_block;
+    }
+    free_block->prev = NULL;
+    free_list = free_block;
+}
+
+void remove_from_free_list(FreeBlock *block) {
+    if (!block) return;
+
+    if (block->prev) {
+        block->prev->next = block->next;
+    } else {
+        free_list = block->next; // If no `prev`, it was the head of the list.
+    }
+
+    if (block->next) {
+        block->next->prev = block->prev;
+    }
+
+    block->next = block->prev = NULL; // Clear pointers to prevent dangling references.
 }
 
 
