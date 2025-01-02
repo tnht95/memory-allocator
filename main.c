@@ -119,9 +119,6 @@ uint8_t *split_block(FreeBlock *block, size_t total_size) {
         HeaderFooter *footer = (HeaderFooter *) ((uint8_t *) free_block + remaining_free_size - sizeof(HeaderFooter));
         footer->metadata = SET_METADATA(remaining_free_size, 1);
 
-        // join and add free block to free list
-        FreeBlock *coalesced_free_block = coalesce(free_block);
-        add_to_free_list(coalesced_free_block);
 
         // return this block for user
         block->header.metadata = SET_METADATA(total_size, 0);
@@ -131,6 +128,9 @@ uint8_t *split_block(FreeBlock *block, size_t total_size) {
         // Update the high watermark if this allocation extends it.
         highest_addr = MAX(highest_addr, (uint8_t *) block + total_size);
 
+        // join and add free block to free list
+        FreeBlock *coalesced_free_block = coalesce(free_block);
+        add_to_free_list(coalesced_free_block);
         return (uint8_t *) block + sizeof(HeaderFooter);
     }
 
@@ -173,5 +173,3 @@ void remove_from_free_list(FreeBlock *block) {
 
     block->next = block->prev = NULL; // Clear pointers to prevent dangling references.
 }
-
-
